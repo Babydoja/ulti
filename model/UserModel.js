@@ -1,6 +1,5 @@
 const mongoose = require("mongoose");
-
-
+const crypto = require('crypto');
 /// Function to generate a unique userId
 function generateUniqueUserId() {
     const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -10,11 +9,12 @@ function generateUniqueUserId() {
     const numberPart = Math.floor(Math.random() * 100000).toString().padStart(5, '0');
     return letterPart + numberPart;
 }
+
 // Function to get current date and time in the desired format
 const getCurrentDateTime = () => {
     const now = new Date();
     return now.toLocaleString();
-  };
+};
 
 // Define the user schema
 const userSchema = mongoose.Schema({
@@ -94,18 +94,26 @@ const userSchema = mongoose.Schema({
     },
     isVerified: {
         type: Boolean,
-        required: false
+        default: false // Set default to false until verified
     },
     verificationToken: {
         type: String,
     },
-
+    otp: {
+        type: String, // Store the hashed OTP
+    },
+    otpExpiresAt: {
+        type: Date, // To store OTP expiration time
+    },
+    lastLogin: {
+        type: Date // To track the last login time
+    },
     profilePicture: {
         type: String,
         default: ''
     }
 }, {
-    timestamps: true
+    timestamps: true // Automatically manage createdAt and updatedAt fields
 });
 
 // Create the user model

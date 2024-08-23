@@ -3,7 +3,8 @@ const router = express.Router();
 const multer = require("multer");
 const path = require("path");
 const { registerUser, loginUser, updateUser, viewAllUser, placeOrder, changePassword, 
-    resetPassword, forgotPassword, emailVerification } = require("../controller/UserController");
+    resetPassword, forgotPassword, 
+    deleteUser,verifyOtp,resendVerificationOtp} = require("../controller/UserController");
 const auth = require("../middleware/AuthMiddleware");
 
 
@@ -23,6 +24,7 @@ router.post("/register", registerUser);
 router.post("/login", loginUser);
 router.put("/update/:id", upload.single('profilePicture'), updateUser); // Add upload middleware for update route
 router.get("/viewAllUser", viewAllUser);
+router.delete("/deleteUser/:id", deleteUser);
 
 // New route for placing an order
 router.post("/order", placeOrder);
@@ -34,7 +36,9 @@ router.post('/forgotpassword', forgotPassword)
 router.put('/resetpassword/:resetToken', resetPassword)
 
 //email verification
-router.post('/verify-email', emailVerification)
+router.post('/verifyotp',verifyOtp)
+router.post('/resendverifyotp',resendVerificationOtp)
+// router.get('/verify-email', emailVerification)
 
 // protected route
 router.get("/protected", auth, (req, res) => {

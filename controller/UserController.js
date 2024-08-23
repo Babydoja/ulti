@@ -7,98 +7,296 @@ const OrderModel = require("../model/OrderModel");
 const cloudinary = require('cloudinary').v2; // Ensure you have cloudinary setup
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const userVerify = require("../model/userVerification");
+
 
 // Nodemailer configuration
 const transporter = nodemailer.createTransport({
-    service: 'Gmail',
+    service: 'gmail',
+    host: process.env.EMAIL_HOST,
     auth: {
-      user: process.env.EMAIL_SECRET,
-      pass: process.env.PASS_SECRET
+        user: process.env.EMAIL_SECRET,
+        pass: process.env.PASS_SECRET
+    },
+    tls: {
+        rejectUnauthorized: false
     }
 });
 
-// Register a new user
+// testing
+transporter.verify((error, success) => {
+    if (error) {
+        console.log(error);
+    } else {
+        console.log('Ready for message');
+        console.log(success);
+    }
+});
+
 const registerUser = async (req, res) => {
-    const {
-        firstName,
-        lastName,
-        email,
-        password,
-        street,
-        postcode,
-        country,
-        stateCounty,
-        cityTown,
-        age,
-        sex,
-        maritalStatus,
-        phoneNumber,
-        nationality
-    } = req.body;
+    try {
+        const {
+            firstName,
+            lastName,
+            email,
+            password,
+            street,
+            postcode,
+            country,
+            stateCounty,
+            cityTown,
+            age,
+            sex,
+            maritalStatus,
+            phoneNumber,
+            nationality
+        } = req.body;
 
-    if (!firstName) return res.status(400).json("Please enter your first name");
-    if (!lastName) return res.status(400).json("Please enter your last name");
-    if (!email) return res.status(400).json("Please enter your email address");
-    if (!password) return res.status(400).json("Please enter your password");
-    if (password.length < 6) return res.status(400).json("Password must be at least 6 characters");
+        // Validate required fields
+        if (!firstName) return res.status(400).json({ message: "Please enter your first name" });
+        if (!lastName) return res.status(400).json({ message: "Please enter your last name" });
+        if (!email) return res.status(400).json({ message: "Please enter your email address" });
+        if (!password) return res.status(400).json({ message: "Please enter your password" });
+        if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
 
-    const uniqueEmail = await UserModel.findOne({ email });
-    if (uniqueEmail) return res.status(400).json("Email already in use");
+        // Check if email is already in use
+        const existingUser = await UserModel.findOne({ email });
+        if (existingUser) return res.status(400).json({ message: "Email already in use" });
 
-    const hashPassword = await bcrypt.hash(password, 10);
-    const verificationToken = crypto.randomBytes(20).toString('hex');
+        // Hash the password
+        const hashPassword = await bcrypt.hash(password, 10);
 
-    const newUser = new UserModel({
-        firstName,
-        lastName,
-        email,
-        password: hashPassword,
-        street,
-        postcode,
-        country,
-        stateCounty,
-        cityTown,
-        age,
-        sex,
-        maritalStatus,
-        phoneNumber,
-        nationality,
-        verificationToken
-    });
+        // Create and save the new user
+        const newUser = new UserModel({
+            firstName,
+            lastName,
+            email,
+            password: hashPassword,
+            street,
+            postcode,
+            country,
+            stateCounty,
+            cityTown,
+            age,
+            sex,
+            maritalStatus,
+            phoneNumber,
+            nationality,
+            isVerified: false
+        });
 
-    await newUser.save();
-
-    const mailOptions = {
-        from: process.env.EMAIL_SECRET,
-        to: newUser.email,
-        subject: 'Email Verification',
-        text: `Please verify your email by clicking the following link: http://localhost:8004/verify-email?token=${verificationToken}`
-    };
-
-    transporter.sendMail(mailOptions, (error, info) => {
-        if (error) {
-            console.error('Error sending email:', error);
-            return res.status(500).send({ error: 'Error sending email' });
-        }
-        res.status(201).send({ message: 'User registered. Please check your email to verify your account.' });
-    });
+        const savedUser = await newUser.save();
+        // Account verification
+        await sendEmailVerification(savedUser, res);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
 };
 
-// Email verification
-const emailVerification = async (req, res) => {
-    const { token } = req.query;
+const sendEmailVerification = async ({ _id, email }, res) => {
+    try {
+        const otp = `${Math.floor(1000 + Math.random() * 9000)}`;
+        const mailOptions = {
+            from: process.env.EMAIL_SECRET,
+            to: email,
+            subject: 'Verify your email',
+            html: `<p>Use the OTP <b>${otp}</b> in the app to verify your email address and complete your registration. <b>Expires in 6 hours</b>.</p>`
+        };
+        const saltRounds = 10;
+        const hashedOTP = await bcrypt.hash(otp, saltRounds);
+        const newVerify = new userVerify({
+            userId: _id,
+            otp: hashedOTP,
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 3600000 * 6 // 6 hours
+        });
 
-    const user = await UserModel.findOne({ verificationToken: token });
-    if (!user) {
-        return res.status(400).send({ error: 'Invalid token' });
+        await newVerify.save();
+        await transporter.sendMail(mailOptions);
+        res.status(200).json({ message: 'Verification OTP email sent', data: { userId: _id, email } });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
     }
+};
 
-    user.isVerified = true;
-    user.verificationToken = undefined;
-    await user.save();
+const verifyOtp = async (req, res) => {  // Corrected function name and arguments order
+    try {
+        const { userId, otp } = req.body;
+        if (!userId || !otp) {
+            throw new Error('Empty OTP details are not allowed');
+        }
 
-    res.send({ message: 'Email verified successfully. You can now log in.' });
-}
+        const otpVerifyRecord = await userVerify.findOne({ userId });
+        if (!otpVerifyRecord) {
+            throw new Error('Account record does not exist');
+        }
+
+        const { expiresAt, otp: hashedOtp } = otpVerifyRecord;
+        if (expiresAt < Date.now()) {
+            await userVerify.deleteMany({ userId });
+            throw new Error('OTP code has expired');
+        }
+
+        const isValidOtp = await bcrypt.compare(otp, hashedOtp);
+        if (!isValidOtp) {
+            throw new Error('Invalid OTP code');
+        }
+
+        await UserModel.updateOne({ _id: userId }, { isVerified: true });
+        await userVerify.deleteMany({ userId });
+
+        res.status(200).json({ message: 'User email verified successfully' });
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+};
+const resendVerificationOtp = async (req, res) => {  // Corrected function name and arguments order
+    try {
+        const { userId, email } = req.body;
+        if (!userId || !email) {
+            throw new Error('Empty user details');
+        }
+
+        await userVerify.deleteMany({ userId });
+        await sendEmailVerification({ _id: userId, email }, res);
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+};
+
+// const verification = ()=>{
+//     let {userId, uniqueString} = req.params
+//     userVerify.find({userId})
+//     .then()
+//     .catch((error)=>{
+//         console.log(error);
+//         res.status(500).send({ error: 'Internal server error' });
+//     })
+
+// }
+// const emailVerification = async (req, res) => {
+//     const { token } = req.query;
+
+//     if (!token) {
+//         return res.status(400).send({ error: 'No token provided' });
+//     }
+
+//     try {
+//         const user = await UserModel.findOne({ verificationToken: token });
+//         if (!user) {
+//             return res.status(400).send({ error: 'Invalid or expired token' });
+//         }
+
+//         user.isVerified = true;
+//         user.verificationToken = undefined;
+//         await user.save();
+
+//         res.send({ message: 'Email verified successfully. You can now log in.' });
+//     } catch (error) {
+//         console.error('Error during email verification:', error);
+//         res.status(500).send({ error: 'Internal server error' });
+//     }
+// };
+
+// / Email server connection
+// const server = email.server.connect({
+//     user: process.env.EMAIL_SECRET,
+//     password: process.env.PASS_SECRET,
+//     host: process.env.EMAIL_HOST, // Use the correct host for your email service provider
+//     ssl: true,
+// });
+
+// Register a new user
+// const registerUser = async (req, res) => {
+//     const {
+//         firstName,
+//         lastName,
+//         email,
+//         password,
+//         street,
+//         postcode,
+//         country,
+//         stateCounty,
+//         cityTown,
+//         age,
+//         sex,
+//         maritalStatus,
+//         phoneNumber,
+//         nationality
+//     } = req.body;
+
+//     if (!firstName) return res.status(400).json("Please enter your first name");
+//     if (!lastName) return res.status(400).json("Please enter your last name");
+//     if (!email) return res.status(400).json("Please enter your email address");
+//     if (!password) return res.status(400).json("Please enter your password");
+//     if (password.length < 6) return res.status(400).json("Password must be at least 6 characters");
+//     const uniqueEmail = await UserModel.findOne({ email });
+//     if (uniqueEmail) return res.status(400).json("Email already in use");
+
+//     const hashPassword = await bcrypt.hash(password, 10);
+//     const verificationToken = crypto.randomBytes(20).toString('hex');
+
+//     const newUser = new UserModel({
+//         firstName,
+//         lastName,
+//         email,
+//         password: hashPassword,
+//         street,
+//         postcode,
+//         country,
+//         stateCounty,
+//         cityTown,
+//         age,
+//         sex,
+//         maritalStatus,
+//         phoneNumber,
+//         nationality,
+//         verificationToken
+//     });
+
+//     await newUser.save();
+
+//     const message = {
+//         text: `Please verify your email by clicking the following link: http://localhost:8004/verify-email?token=${verificationToken}`,
+//         from: process.env.EMAIL_SECRET,
+//         to: newUser.email,
+//         subject: 'Email Verification',
+//     };
+
+//     try {
+//         await server.send(message);
+//         res.status(201).send({ message: 'User registered. Please check your email to verify your account.' });
+//     } catch (error) {
+//         console.error('Error sending email:', error);
+//         res.status(500).send({ error: 'Error sending email' });
+//     }
+// };
+
+// Email verification
+// const emailVerification = async (req, res) => {
+//     const { token } = req.query;
+//     console.log('Verification endpoint hit');
+
+//     if (!token) {
+//         return res.status(400).send({ error: 'No token provided' });
+//     }
+
+//     try {
+//         const user = await UserModel.findOne({ verificationToken: token });
+//         if (!user) {
+//             return res.status(400).send({ error: 'Invalid or expired token' });
+//         }
+
+//         user.isVerified = true;
+//         user.verificationToken = undefined;
+//         await user.save();
+//         res.send({ message: 'Email verified successfully. You can now log in.' });
+//     } catch (error) {
+//         console.error('Error during email verification:', error);
+//         res.status(500).send({ error: 'Internal server error' });
+//     }
+//     // http://localhost:8004/api/user/verify-email?token=/6324e526d5c5e22c611566374ddd66b2e54c057d
+// };
 
 // Login a user
 const loginUser = async (req, res) => {
@@ -222,6 +420,20 @@ const viewAllUser = (req, res) => {
             res.status(401).json('error' + error)
         });
 };
+
+const deleteUser =(async(req,res) =>{
+    try {
+        const {id} =req.params 
+       const user = await UserModel.findByIdAndDelete(id) 
+       if (!user) {
+        return res.status(404).json(`no user without id :${id}`)
+       }
+       res.status(200).json(user)
+    } catch (error) {
+        res.status(500).json({msg:error.message})
+    }
+
+})
 
 // Place a new order
 const placeOrder = async (req, res) => {
@@ -364,9 +576,8 @@ const resetPassword = async (req, res, next) => {
 
     if (!userToken) {
         res.status(404);
-        throw new Error("Invalid or Expired Token");
+        throw new Error("Invalid or Expired Token"); 
     }
-
     // Find user
     const user = await UserModel.findOne({ _id: userToken.userId });
     user.password = await bcrypt.hash(password, 10);
@@ -376,4 +587,5 @@ const resetPassword = async (req, res, next) => {
     });
 };
 
-module.exports = { registerUser, loginUser, updateUser, viewAllUser, placeOrder, changePassword, forgotPassword, resetPassword, emailVerification };
+
+module.exports = { registerUser, loginUser, updateUser, deleteUser,viewAllUser,verifyOtp,resendVerificationOtp, sendEmailVerification,  placeOrder, changePassword, forgotPassword, resetPassword,  };
